@@ -255,3 +255,77 @@
 检测多个功能完全相同的 Mod（如多个生物群系 Mod）
 → 提示用户选择其一
 ```
+
+---
+
+## 12. TACZ 枪械生态（Gun Mod 专项）
+
+### 12.1 什么是 TACZ
+
+**Timeless and Classics Zero（永恒枪械工坊：零）** 是 Java 版枪械 Mod 的主流分支，由原 TaC 团队完全重写。
+
+| 项目 | 内容 |
+|------|------|
+| **Modrinth slug** | `timeless-and-classics-zero` |
+| **加载器** | Forge（1.18.2 / 1.19.x / 1.20–1.20.1）；NeoForge 社区移植版 |
+| **Fabric 移植** | `tacz-refabricated`（非官方移植） |
+| **前置依赖** | Cloth Config API（可选，用于配置 GUI） |
+| **下载量** | 17M+（Modrinth，2026 年） |
+| **许可证** | 代码 GPL-3.0-only；资源 CC BY-NC-ND 4.0 |
+
+### 12.2 枪包（Gun Pack）机制
+
+TACZ 的核心特性是**可扩展枪包**：无需写代码，以 `.zip` 格式分发，放入游戏目录即可加载。
+
+**安装路径：**
+
+| TACZ 版本 | 枪包存放路径 |
+|-----------|------------|
+| ≤ 1.0.3   | `.minecraft/config/tacz/custom/` |
+| ≥ 1.1.4   | `.minecraft/tacz/` |
+
+> ⚠️ 1.1.4 版本起，枪包文件格式发生了重大升级，旧格式枪包需按官方迁移指南转换后才能使用。
+
+**枪包格式：**
+- 文件格式：`.zip` 压缩包（或开发调试时用文件夹）
+- 命名空间：仅支持小写英文字母、数字、下划线，不支持中文
+- 重载命令：`/tacz reload` 或 `/reload`
+
+### 12.3 枪包在 Modrinth 上的搜索策略
+
+枪包发布在 Modrinth 上时，通常具备以下特征：
+
+| 字段 | 典型值 |
+|------|--------|
+| `categories` | 包含 `equipment`，部分还有 `adventure`、`game-mechanics` |
+| `loaders` | 通常为空（枪包是资源包/数据包形式，非 Jar Mod） |
+| 标题关键词 | 包含 `tacz`、`gun pack`、`gunpack`、`TaCZ` |
+
+**搜索方式（优先级排序）：**
+
+1. `query="tacz <枪械关键词>" + category="equipment"` → 最精准
+2. `query="tacz gunpack"` → 泛搜
+3. `query="<枪械关键词> gun pack"` → 回退到普通 Mod 搜索
+
+### 12.4 已知主流 TACZ 枪包（参考）
+
+| 枪包名称 | 风格 | 来源 |
+|---------|------|------|
+| Hell Divers2 Gun Pack | 科幻/现代战争（地狱潜兵2） | CurseForge |
+| TTI Gun Pack | 战术改装枪械 | Modrinth |
+| The Division Gunpack | 现代战术（全境封锁） | Modrinth |
+| ARIP Attachments Pack | 配件包 | Modrinth |
+| EMX-Arms Gunpack | 现代步枪 | Modrinth |
+| Fallout Gunpack (unofficial) | 废土末日 | Modrinth |
+| LesRaisins Append Pack | 投掷物+近战+枪械 | Modrinth |
+
+> 上述列表仅供参考，实际枪包持续更新，以 Modrinth 搜索结果为准。
+
+### 12.5 枪械 Mod 兼容性规则
+
+| 规则 | 说明 |
+|------|------|
+| TACZ 与其他枪械 Mod | 可共存，但 UI 和弹药系统各自独立 |
+| 多枪包共存 | ✅ TACZ 支持同时加载多个枪包，命名空间不冲突即可 |
+| Forge 版 TACZ + Fabric Mod | ❌ 不兼容，加载器限制 |
+| OptiFine 与 TACZ | ⚠️ 部分光影效果与 TACZ 模型动画可能冲突，优先用 Oculus |

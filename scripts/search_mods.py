@@ -13,6 +13,12 @@ import sys
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
+
+# 在 Windows 下强制 stdout/stderr 使用 UTF-8，避免中文/特殊字符 GBK 编码错误
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 from typing import Optional
 
 # requests 可能不在标准库中，使用 urllib 作为 fallback
@@ -39,6 +45,34 @@ SORT_SCORE_WEIGHTS = {
     "version_match": 0.20,
 }
 
+# ============================================================
+# TACZ 枪械生态常量
+# ============================================================
+TACZ_MOD_SLUG = "timeless-and-classics-zero"
+TACZ_MOD_NAME = "Timeless and Classics Zero (TaCZ)"
+TACZ_MODRINTH_URL = f"https://modrinth.com/mod/{TACZ_MOD_SLUG}"
+
+# 触发"枪械意图"的关键词（中英文混合）
+TACZ_GUN_KEYWORDS = {
+    # 中文
+    "枪", "枪械", "枪包", "枪mod", "枪模组", "射击", "武器", "手枪", "步枪",
+    "狙击", "霰弹", "冲锋枪", "机枪", "左轮", "燧发枪", "火枪", "枪战",
+    "现代战争", "军事", "弹药", "子弹",
+    # 英文
+    "gun", "firearm", "weapon", "pistol", "rifle", "sniper", "shotgun",
+    "smg", "submachine", "lmg", "machine gun", "revolver", "musket",
+    "gunpack", "gun pack", "tacz", "tac", "bullet", "ammo", "ammunition",
+    "fps", "combat", "warfare", "military",
+}
+
+# Modrinth 上 TACZ 枪包的典型 category 标签
+TACZ_GUNPACK_CATEGORIES = {"equipment", "adventure", "game-mechanics"}
+
+# TACZ 支持的 Minecraft 版本范围（Forge 官方版）
+TACZ_SUPPORTED_VERSIONS = {
+    "1.18.2", "1.19", "1.19.1", "1.19.2", "1.20", "1.20.1",
+}
+
 
 # ============================================================
 # 数据模型
@@ -60,10 +94,10 @@ class ModResult:
     author: str
     description: str
     downloads: int
-    favorites: int = 0
     categories: list
     game_versions: list
     loaders: list
+    favorites: int = 0
     latest_version: str = ""
     published: str = ""
     updated: str = ""
@@ -118,6 +152,248 @@ def http_get(url: str, headers: dict = None, timeout: int = DEFAULT_TIMEOUT) -> 
 
 
 # ============================================================
+# TACZ 枪械意图识别 & 枪包搜索
+# ============================================================
+
+def detect_gun_intent(query: str) -> bool:
+    """
+    判断用户输入是否属于枪械/武器相关需求。
+    任意关键词命中即返回 True。
+    """
+    q_lower = query.lower()
+    for kw in TACZ_GUN_KEYWORDS:
+        if kw in q_lower:
+            return True
+    return False
+
+
+@dataclass
+class TaczGunpackResult:
+    """TACZ 枪包搜索结果（轻量包装，复用 ModResult 格式）"""
+    mod_result: "ModResult"
+    is_tacz_gunpack: bool = True  # 标记来源为 TACZ 枪包搜索
+
+
+# 中文枪械关键词 → 英文搜索词映射（Modrinth 枪包标题大多为英文）
+_CN_GUN_MAP = {
+    "步枪": "rifle", "狙击": "sniper", "霰弹": "shotgun",
+    "手枪": "pistol", "冲锋枪": "smg", "机枪": "machine gun",
+    "左轮": "revolver", "燧发枪": "musket", "火枪": "musket",
+    "枪": "gun", "枪械": "gun", "枪包": "gun pack",
+    "武器": "weapon", "弹药": "ammo", "子弹": "bullet",
+    "射击": "shooting", "军事": "military", "战争": "warfare",
+    "现代": "modern", "废土": "fallout", "末日": "apocalypse",
+    "科幻": "scifi", "未来": "futuristic", "西部": "western",
+}
+
+
+def _translate_gun_query(query: str) -> str:
+    """将中文枪械查询词转换为英文，提升 Modrinth 搜索命中率"""
+    import re
+    q = query.lower().strip()
+    for cn, en in _CN_GUN_MAP.items():
+        if cn in q:
+            q = q.replace(cn, en)
+    # 移除剩余中文字符，保留英文词和翻译结果
+    q = re.sub(r'[\u4e00-\u9fff]+', ' ', q).strip()
+    q = re.sub(r'\s+', ' ', q).strip()
+    return q or "gun"
+
+
+def search_tacz_gunpacks(
+    query: str,
+    version: str = None,
+    limit: int = 10,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> tuple[bool, list]:
+    """
+    TACZ 枪包专项搜索。
+
+    搜索策略（按优先级）：
+      1. query="tacz <英文关键词>" + filters="equipment AND version"
+      2. query="tacz <英文关键词>"（不加分类过滤）
+      3. 若均无结果，返回 (False, []) 触发 fallback
+
+    Returns:
+        (found: bool, mods: list[ModResult])
+    """
+    endpoint = f"{MODRINTH_BASE}/search"
+    all_results = []
+    seen_slugs: set = set()
+
+    en_query = _translate_gun_query(query)
+
+    # 构造策略：使用 Modrinth facets JSON 语法（[[...],[...]] 格式）
+    strategies = []
+
+    # 策略1：equipment 分类 + 版本过滤
+    facets1 = [["categories:equipment"]]
+    if version:
+        facets1.append([f"versions:{version}"])
+    strategies.append({
+        "query": f"tacz {en_query}",
+        "facets": facets1,
+        "label": f"策略1(equipment+{version or 'any'})",
+    })
+
+    # 策略2：只加版本过滤，不限分类
+    facets2 = []
+    if version:
+        facets2.append([f"versions:{version}"])
+    strategies.append({
+        "query": f"tacz {en_query}",
+        "facets": facets2 if facets2 else None,
+        "label": f"策略2(no-cat+{version or 'any'})",
+    })
+
+    for strategy in strategies:
+        params = [
+            ("query", strategy["query"]),
+            ("limit", str(min(limit, 20))),
+            ("index", "downloads"),
+        ]
+        if strategy["facets"]:
+            params.append(("facets", json.dumps(strategy["facets"])))
+
+        url = endpoint + "?" + "&".join(
+            f"{k}={urllib.parse.quote(str(v))}" for k, v in params
+        )
+        data = http_get(url, timeout=timeout)
+
+        if not data or "hits" not in data:
+            print(f"  [TACZ] {strategy['label']}: 请求失败或超时", file=sys.stderr)
+            continue
+
+        hits = data.get("hits", [])
+        print(f"  [TACZ] {strategy['label']}: 返回 {len(hits)} 条", file=sys.stderr)
+
+        for hit in hits:
+            slug = hit.get("slug", "").lower()
+            title = hit.get("title", "").lower()
+
+            if not _is_tacz_related(slug, title, hit.get("description", "")):
+                continue
+            if slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+
+            deps = fetch_modrinth_dependencies(hit.get("project_id", ""), timeout)
+            warnings = _check_warnings(hit, version)
+
+            mod = ModResult(
+                name=hit.get("title", ""),
+                slug=slug,
+                author=hit.get("author", ""),
+                description=hit.get("description", ""),
+                downloads=hit.get("downloads", 0),
+                categories=hit.get("categories", []),
+                game_versions=[hit.get("latest_version", "")],
+                loaders=hit.get("loaders") or [],
+                favorites=0,
+                latest_version=hit.get("latest_version", ""),
+                published=hit.get("date_created", "")[:10] if hit.get("date_created") else "",
+                updated=hit.get("date_modified", "")[:10] if hit.get("date_modified") else "",
+                icon_url=hit.get("icon_url", ""),
+                modrinth_url=f"https://modrinth.com/mod/{slug}",
+                dependencies=deps,
+                warnings=warnings,
+                platform="modrinth",
+            )
+            all_results.append(mod)
+
+        if len(all_results) >= 3:
+            break
+
+    if not all_results:
+        return False, []
+
+    for mod in all_results:
+        mod.score = calculate_mod_score(mod, version)
+    all_results.sort(key=lambda m: m.score, reverse=True)
+
+    return True, all_results[:limit]
+    for mod in all_results:
+        mod.score = calculate_mod_score(mod, version)
+    all_results.sort(key=lambda m: m.score, reverse=True)
+
+    return True, all_results[:limit]
+
+
+def _is_tacz_related(slug: str, title: str, description: str) -> bool:
+    """判断一个 Modrinth 条目是否是 TACZ 相关的枪包"""
+    combined = f"{slug} {title} {description[:200]}".lower()
+    tacz_markers = ["tacz", "timeless and classics zero", "timeless-and-classics-zero",
+                    "timeless-and-classics", "gun pack", "gunpack"]
+    return any(marker in combined for marker in tacz_markers)
+
+
+def _check_warnings(hit: dict, version: str = None) -> list[str]:
+    """通用警告检查（更新时间 + 版本兼容）"""
+    warnings = []
+    updated_date = hit.get("date_modified", "")
+    if updated_date:
+        try:
+            update_time = datetime.fromisoformat(updated_date.replace("Z", "+00:00"))
+            days_since = (datetime.now(update_time.tzinfo) - update_time).days
+            if days_since > 365:
+                warnings.append("久未更新")
+            elif days_since > 180:
+                warnings.append("更新较久")
+        except Exception:
+            pass
+    return warnings
+
+
+def build_tacz_base_mod(version: str = None) -> "ModResult":
+    """构造 TACZ 本体的 ModResult 占位（用于在结果中优先展示基础 Mod）"""
+    return ModResult(
+        name="[TaCZ] Timeless and Classics Zero",
+        slug=TACZ_MOD_SLUG,
+        author="Timeless Squad",
+        description=(
+            "最沉浸、最可定制的 Minecraft 现代 FPS 体验。"
+            "支持第三方枪包扩展，提供精致的射击动画和改装系统。"
+            "枪包放入 .minecraft/tacz/ 目录即可加载。"
+        ),
+        downloads=17_000_000,
+        favorites=2749,
+        categories=["adventure", "equipment"],
+        game_versions=list(TACZ_SUPPORTED_VERSIONS),
+        loaders=["forge"],
+        latest_version="1.1.4",
+        modrinth_url=TACZ_MODRINTH_URL,
+        warnings=(
+            ["⚠️ 当前版本不在 TACZ 官方支持范围内，请关注社区移植版"]
+            if version and version not in TACZ_SUPPORTED_VERSIONS
+            else []
+        ),
+        platform="modrinth",
+        score=99.0,
+    )
+
+
+def format_tacz_header(version: str = None, loader: str = None) -> str:
+    """生成 TACZ 搜索模式的标题提示"""
+    lines = [
+        "\n" + "=" * 60,
+        "  [TACZ] Minecraft 枪械 Mod 搜索 — TACZ 优先模式",
+        f"  版本: {version or '不限'}  |  加载器: {loader or 'Forge（TACZ 默认）'}",
+        "=" * 60,
+        "",
+        "  [第一步] 推荐基础框架",
+        "  " + "-" * 40,
+        f"  >> {TACZ_MOD_NAME}",
+        f"     Modrinth: {TACZ_MODRINTH_URL}",
+        f"     支持版本: 1.18.2 / 1.19.x / 1.20-1.20.1 (Forge)",
+        "     安装枪包：将 .zip 放入 .minecraft/tacz/ 后执行 /tacz reload",
+        "",
+        "  [第二步] TACZ 枪包搜索结果",
+        "  " + "-" * 40,
+    ]
+    return "\n".join(lines)
+
+
+# ============================================================
 # Modrinth 搜索
 # ============================================================
 def search_modrinth(
@@ -132,17 +408,17 @@ def search_modrinth(
     endpoint = f"{MODRINTH_BASE}/search"
 
     params = [("query", query), ("limit", str(min(limit, 100)))]
-    facets = []
+    facets_list = []
 
     if version:
-        facets.append(f'versions="{version}"')
+        facets_list.append([f"versions:{version}"])
     if loader:
-        facets.append(f'loaders="{loader}"')
+        facets_list.append([f"loaders:{loader}"])
     if category:
-        facets.append(f'categories="{category}"')
+        facets_list.append([f"categories:{category}"])
 
-    if facets:
-        params.append(("filters", " AND ".join(facets)))
+    if facets_list:
+        params.append(("facets", json.dumps(facets_list)))
 
     url = endpoint + "?" + "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params)
     results = http_get(url, timeout=timeout)
@@ -209,10 +485,30 @@ def fetch_modrinth_dependencies(project_id: str, timeout: int = DEFAULT_TIMEOUT)
     if not data:
         return []
 
+    # Modrinth /dependencies 可能返回 {"projects": [...], "versions": [...]}
+    # 也可能直接返回 list（旧版 API）
+    if isinstance(data, dict):
+        projects = data.get("projects", [])
+        deps = []
+        for proj in projects:
+            if not isinstance(proj, dict):
+                continue
+            deps.append(ModDependency(
+                name=proj.get("title", ""),
+                slug=proj.get("slug", ""),
+                required=True,  # projects 列表中的均视为 required
+                downloads=proj.get("downloads", 0),
+                url=f"https://modrinth.com/mod/{proj.get('slug', '')}",
+            ))
+        return deps
+
+    # 兼容旧版 list 格式
     deps = []
     for item in data:
+        if not isinstance(item, dict):
+            continue
         proj = item.get("project")
-        if not proj:
+        if not proj or not isinstance(proj, dict):
             continue
         dep_type = item.get("dependency_type", "optional")
         deps.append(ModDependency(
@@ -908,6 +1204,44 @@ def main():
         return
 
     # 单 Mod 搜索模式（默认）
+    # ── TACZ 枪械优先路径 ──────────────────────────────────────
+    if detect_gun_intent(args.query):
+        print(f"  → 检测到枪械意图，启用 TACZ 枪包优先搜索...", file=sys.stderr)
+        tacz_found, tacz_mods = search_tacz_gunpacks(
+            query=args.query,
+            version=args.version,
+            limit=args.limit,
+            timeout=args.timeout,
+        )
+
+        if tacz_found and tacz_mods:
+            # 计算依赖并输出
+            tacz_mods = add_dependency_mods(tacz_mods, timeout=args.timeout)
+
+            if args.output == "json":
+                output_data = {
+                    "mode": "tacz_gunpack",
+                    "query": args.query,
+                    "version": args.version,
+                    "tacz_base": {
+                        "name": TACZ_MOD_NAME,
+                        "modrinth_url": TACZ_MODRINTH_URL,
+                        "supported_versions": sorted(TACZ_SUPPORTED_VERSIONS),
+                    },
+                    "total": len(tacz_mods),
+                    "results": [asdict(m) for m in tacz_mods],
+                    "errors": [],
+                }
+                print(json.dumps(output_data, ensure_ascii=False, indent=2))
+            else:
+                print(format_tacz_header(args.version, args.loader))
+                print(format_results_text(tacz_mods, args.query, args.version))
+                print("\n  💡 提示：上述枪包需要先安装 TACZ 基础 Mod，枪包放入 .minecraft/tacz/ 目录")
+            return
+        else:
+            print(f"  → TACZ 枪包搜索无结果，回退到普通 Mod 搜索...", file=sys.stderr)
+
+    # ── 普通 Mod 搜索（默认路径 / TACZ fallback）─────────────────
     print(f"正在搜索 Modrinth... (超时 {args.timeout}s)", file=sys.stderr)
     t0 = time.time()
     modrinth_results = search_modrinth(

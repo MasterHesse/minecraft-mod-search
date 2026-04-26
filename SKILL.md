@@ -11,7 +11,9 @@ description: >
   Triggers include: "帮我找个XX功能的mod", "搜索XX mod", "我的世界mod推荐",
   "XX模组兼容吗", "mod依赖", "forge模组", "fabric模组", "1.20.4 mod",
   "minecraft java mod search", "整合包", "modpack推荐", "科技包", "魔法包",
-  "生存包", "我的世界1.20.4 forge 整合包".
+  "生存包", "我的世界1.20.4 forge 整合包", "枪械mod", "枪包", "tacz",
+  "枪模组", "手枪", "步枪", "霰弹枪", "狙击枪", "左轮", "火枪", "射击mod",
+  "gun mod", "firearm", "gun pack", "tacz gunpack".
 ---
 
 # Minecraft Java Mod Search Skill
@@ -65,6 +67,53 @@ description: >
 - `category`: Mod 类别
 
 若用户未指定版本，询问确认或使用当前主流版本（优先 1.20.4 / 1.21.x）。
+
+### Step 1.5 — 枪械意图检测与 TACZ 优先搜索
+
+**当检测到用户查询涉及枪械/武器类需求时**，优先使用 TACZ（Timeless and Classics Zero）枪包生态搜索，而非普通 Mod 搜索。
+
+#### 枪械意图关键词
+
+以下关键词命中时自动触发 TACZ 优先模式：
+
+| 语言 | 关键词 |
+|------|--------|
+| 中文 | 枪、枪械、枪包、枪mod、枪模组、射击、武器、手枪、步枪、狙击、霰弹、冲锋枪、机枪、左轮、燧发枪、火枪、现代战争、军事、弹药、子弹 |
+| 英文 | gun, firearm, weapon, pistol, rifle, sniper, shotgun, smg, machine gun, revolver, musket, gunpack, gun pack, tacz, bullet, ammo, fps, combat, warfare, military |
+
+#### TACZ 优先搜索流程
+
+```
+用户查询 "步枪" (含枪械关键词)
+    │
+    ├─ detect_gun_intent(query) == True ?
+    │       │
+    │       ├─ Yes → search_tacz_gunpacks(query, version, loader)
+    │       │         │
+    │       │         ├─ 策略1: "tacz <英文关键词>" + facets=[equipment + version]
+    │       │         ├─ 策略2: "tacz <英文关键词>" + facets=[version]（无分类限制）
+    │       │         │
+    │       │         ├─ 找到结果 → 输出 TACZ 基础 Mod + 枪包列表
+    │       │         │                包含：安装路径、枪包放置说明、依赖关系
+    │       │         │
+    │       │         └─ 无结果 → 回退到普通 Mod 搜索（Step 2）
+    │       │
+    │       └─ No → 直接进入普通 Mod 搜索（Step 2）
+```
+
+#### TACZ 枪包搜索特点
+
+| 特点 | 说明 |
+|------|------|
+| **基础 Mod** | `timeless-and-classics-zero`（Forge 1.18.2–1.20.1），Fabric 有非官方移植 `tacz-refabricated` |
+| **枪包格式** | `.zip` 压缩包，放入 `.minecraft/tacz/` 目录后执行 `/tacz reload` |
+| **搜索平台** | Modrinth（category=`equipment`），脚本自动将中文枪械词翻译为英文关键词 |
+| **多枪包共存** | 支持，命名空间不冲突即可同时加载 |
+| **依赖解析** | 自动提取枪包的 required 前置依赖并补入结果列表 |
+
+#### TACZ 相关参考
+
+详细的 TACZ 生态信息（枪包安装路径、已知枪包列表、兼容性规则）参考：`references/mod_compat.md` 第 12 节。
 
 ### Step 2 — 执行多平台搜索
 
@@ -387,9 +436,15 @@ for mod in all_recommended_mods:
 ### 9.1 单 Mod 搜索
 
 ```bash
+# 普通 Mod 搜索
 python scripts/search_mods.py --query "帧率优化" --version "1.20.4" --loader "fabric"
 python scripts/search_mods.py --query "optifine" --version "1.20.1"
 python scripts/search_mods.py --query "自动化" --version "1.19.2" --loader "forge"
+
+# TACZ 枪包搜索（自动检测枪械意图）
+python scripts/search_mods.py --query "步枪" --version "1.20.1" --loader "forge"
+python scripts/search_mods.py --query "rifle" --version "1.20.1" --limit 5
+python scripts/search_mods.py --query "狙击枪" --version "1.20.1" --output json
 ```
 
 ### 9.2 参数说明
@@ -424,3 +479,5 @@ Mod 之间已知冲突与兼容关系参考：
 - **中文友好**：返回给用户的内容使用中文描述
 - **整合包模式**：始终先确认 MC 版本和加载器，再进行多方向搜索和兼容性检查
 - **诚实报告不兼容**：若用户选择的 Mod 之间确实存在冲突，必须如实报告，不可忽略或回避
+- **枪械类 Mod → TACZ 优先**：当检测到枪械/武器需求时，优先搜索 TACZ 枪包生态，告知用户需先安装 TACZ 基础 Mod；仅当 TACZ 枪包无结果时才回退到普通 Mod 搜索
+- **TACZ 版本限制**：TACZ 官方版仅支持 Forge 1.18.2–1.20.1；若用户使用 Fabric 或更高 MC 版本，需提示关注社区移植版
