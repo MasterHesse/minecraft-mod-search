@@ -73,6 +73,37 @@ TACZ_SUPPORTED_VERSIONS = {
     "1.18.2", "1.19", "1.19.1", "1.19.2", "1.20", "1.20.1",
 }
 
+# ============================================================
+# Create 机械动力生态常量
+# ============================================================
+CREATE_MOD_SLUG = "create"
+CREATE_MOD_NAME = "Create (机械动力)"
+CREATE_MODRINTH_URL = "https://modrinth.com/mod/create"
+
+# 触发"机械/自动化意图"的关键词（中英文混合）
+CREATE_KEYWORDS = {
+    # 中文
+    "机械", "机械动力", "自动化", "传送带", "齿轮", "活塞", "动力",
+    "轴承", "铁路", "火车", "矿车", "旋转", "应力", "流水线",
+    "工厂", "制造", "加工", "搅拌", "碾压", "装配", "压缩",
+    "机械臂", "部署器", "红石机械", "蒸汽", "风车", "水车",
+    # 英文
+    "create mod", "create addon", "create ",  # 注意 "create " 带空格避免误匹配
+    "conveyor", "belt", "gear", "pulley", "bearing", "piston",
+    "automation", "factory", "assembly", "mechanical",
+    "train", "railway", "steam", "windmill", "waterwheel",
+    "rotational", "kinetic", "stress", "cogwheel", "shaft",
+    "deployer", "mixer", "press", "millstone", "crusher",
+}
+
+# Create 在 Modrinth 上的典型 category 标签（附属 mod 分布）
+CREATE_ADDON_CATEGORIES = {"technology", "equipment", "transportation", "utility"}
+
+# Create 支持的 Minecraft 版本范围
+CREATE_SUPPORTED_VERSIONS = {
+    "1.14.4", "1.15.2", "1.16.5", "1.18.2", "1.19.2", "1.20.1",
+}
+
 
 # ============================================================
 # 数据模型
@@ -312,11 +343,6 @@ def search_tacz_gunpacks(
     all_results.sort(key=lambda m: m.score, reverse=True)
 
     return True, all_results[:limit]
-    for mod in all_results:
-        mod.score = calculate_mod_score(mod, version)
-    all_results.sort(key=lambda m: m.score, reverse=True)
-
-    return True, all_results[:limit]
 
 
 def _is_tacz_related(slug: str, title: str, description: str) -> bool:
@@ -388,6 +414,202 @@ def format_tacz_header(version: str = None, loader: str = None) -> str:
         "     安装枪包：将 .zip 放入 .minecraft/tacz/ 后执行 /tacz reload",
         "",
         "  [第二步] TACZ 枪包搜索结果",
+        "  " + "-" * 40,
+    ]
+    return "\n".join(lines)
+
+
+# ============================================================
+# Create 机械动力 — 意图识别 & 附属 mod 搜索
+# ============================================================
+
+def detect_create_intent(query: str) -> bool:
+    """
+    判断用户输入是否属于机械/自动化/科技相关需求。
+    任意关键词命中即返回 True。
+    """
+    q_lower = query.lower()
+    for kw in CREATE_KEYWORDS:
+        if kw in q_lower:
+            return True
+    return False
+
+
+def search_create_addons(
+    query: str,
+    version: str = None,
+    loader: str = None,
+    limit: int = 10,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> tuple:
+    """
+    Create 机械动力附属 mod 专项搜索。
+
+    搜索策略（按优先级）：
+      1. query="create <关键词>" + facets=[technology, version]
+      2. query="create <关键词>" + facets=[version]（不限分类）
+      3. 若均无结果，返回 (False, []) 触发 fallback
+
+    Returns:
+        (found: bool, mods: list[ModResult])
+    """
+    endpoint = f"{MODRINTH_BASE}/search"
+    all_results = []
+    seen_slugs = set()
+
+    en_query = _translate_create_query(query)
+
+    strategies = []
+
+    # 策略1：technology 分类 + 版本过滤
+    facets1 = [["categories:technology"]]
+    if version:
+        facets1.append([f"versions:{version}"])
+    if loader:
+        facets1.append([f"loaders:{loader}"])
+    strategies.append({
+        "query": f"create {en_query}",
+        "facets": facets1,
+        "label": f"策略1(technology+{version or 'any'})",
+    })
+
+    # 策略2：不限分类 + 版本过滤
+    facets2 = []
+    if version:
+        facets2.append([f"versions:{version}"])
+    strategies.append({
+        "query": f"create {en_query}",
+        "facets": facets2 if facets2 else None,
+        "label": f"策略2(no-cat+{version or 'any'})",
+    })
+
+    for strategy in strategies:
+        params = [
+            ("query", strategy["query"]),
+            ("limit", str(min(limit, 20))),
+            ("index", "downloads"),
+        ]
+        if strategy["facets"]:
+            params.append(("facets", json.dumps(strategy["facets"])))
+
+        url = endpoint + "?" + "&".join(
+            f"{k}={urllib.parse.quote(str(v))}" for k, v in params
+        )
+        data = http_get(url, timeout=timeout)
+
+        if not data or "hits" not in data:
+            print(f"  [Create] {strategy['label']}: 请求失败或超时", file=sys.stderr)
+            continue
+
+        hits = data.get("hits", [])
+        print(f"  [Create] {strategy['label']}: 返回 {len(hits)} 条", file=sys.stderr)
+
+        for hit in hits:
+            slug = hit.get("slug", "").lower()
+            title = hit.get("title", "").lower()
+
+            # 跳过 Create 本体（单独展示在 header 中）
+            if slug == CREATE_MOD_SLUG:
+                continue
+
+            # 过滤：标题或描述中需包含 "create"
+            if not _is_create_related(slug, title, hit.get("description", "")):
+                continue
+
+            if slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+
+            deps = fetch_modrinth_dependencies(hit.get("project_id", ""), timeout)
+            warnings = _check_warnings(hit, version)
+
+            mod = ModResult(
+                name=hit.get("title", ""),
+                slug=slug,
+                author=hit.get("author", ""),
+                description=hit.get("description", ""),
+                downloads=hit.get("downloads", 0),
+                categories=hit.get("categories", []),
+                game_versions=[hit.get("latest_version", "")],
+                loaders=hit.get("loaders") or [],
+                favorites=0,
+                latest_version=hit.get("latest_version", ""),
+                published=hit.get("date_created", "")[:10] if hit.get("date_created") else "",
+                updated=hit.get("date_modified", "")[:10] if hit.get("date_modified") else "",
+                icon_url=hit.get("icon_url", ""),
+                modrinth_url=f"https://modrinth.com/mod/{slug}",
+                dependencies=deps,
+                warnings=warnings,
+                platform="modrinth",
+            )
+            all_results.append(mod)
+
+        if len(all_results) >= 5:
+            break
+
+    if not all_results:
+        return False, []
+
+    for mod in all_results:
+        mod.score = calculate_mod_score(mod, version)
+    all_results.sort(key=lambda m: m.score, reverse=True)
+
+    return True, all_results[:limit]
+
+
+# 中文机械/自动化关键词 → 英文搜索词映射
+_CN_CREATE_MAP = {
+    "机械": "mechanical", "机械动力": "create", "自动化": "automation",
+    "传送带": "conveyor belt", "齿轮": "gear cogwheel", "活塞": "piston",
+    "轴承": "bearing", "铁路": "railway train", "火车": "train",
+    "矿车": "minecart", "旋转": "rotational", "应力": "stress",
+    "流水线": "assembly line", "工厂": "factory", "制造": "manufacturing",
+    "加工": "processing", "搅拌": "mixing", "碾压": "crushing",
+    "装配": "assembly", "压缩": "pressing", "机械臂": "deployer",
+    "部署器": "deployer", "红石机械": "redstone mechanical",
+    "蒸汽": "steam", "风车": "windmill", "水车": "waterwheel",
+    "动力": "kinetic", "科技": "technology",
+}
+
+
+def _translate_create_query(query: str) -> str:
+    """将中文机械/自动化查询词转换为英文，提升 Modrinth 搜索命中率"""
+    import re
+    q = query.lower().strip()
+    # 优先匹配长词（避免"机械动力"只替换了"机械"）
+    for cn, en in sorted(_CN_CREATE_MAP.items(), key=lambda x: -len(x[0])):
+        if cn in q:
+            q = q.replace(cn, en, 1)
+    # 移除剩余中文字符
+    q = re.sub(r'[\u4e00-\u9fff]+', ' ', q).strip()
+    q = re.sub(r'\s+', ' ', q).strip()
+    return q or "create"
+
+
+def _is_create_related(slug: str, title: str, description: str) -> bool:
+    """判断一个 Modrinth 条目是否是 Create 相关的附属 mod"""
+    combined = f"{slug} {title} {description[:300]}".lower()
+    create_markers = ["create", "createaddon", "create addon", "simplycreate"]
+    # "create" 太常见，仅在 slug 或标题中出现时才认定为 Create 相关
+    return any(marker in combined for marker in create_markers)
+
+
+def format_create_header(version: str = None, loader: str = None) -> str:
+    """生成 Create 搜索模式的标题提示"""
+    lines = [
+        "\n" + "=" * 60,
+        "  [Create] Minecraft 机械动力 Mod 搜索 — Create 优先模式",
+        f"  版本: {version or '不限'}  |  加载器: {loader or 'Forge / Fabric'}",
+        "=" * 60,
+        "",
+        "  [第一步] 推荐基础框架",
+        "  " + "-" * 40,
+        f"  >> {CREATE_MOD_NAME}",
+        f"     Modrinth: {CREATE_MODRINTH_URL}",
+        f"     支持版本: 1.14.4 / 1.15.2 / 1.16.5 / 1.18.2 / 1.19.2 / 1.20.1",
+        "     支持 Forge 和 Fabric 加载器",
+        "",
+        "  [第二步] Create 附属 Mod 搜索结果",
         "  " + "-" * 40,
     ]
     return "\n".join(lines)
@@ -1241,7 +1463,44 @@ def main():
         else:
             print(f"  → TACZ 枪包搜索无结果，回退到普通 Mod 搜索...", file=sys.stderr)
 
-    # ── 普通 Mod 搜索（默认路径 / TACZ fallback）─────────────────
+    # ── Create 机械动力优先路径 ───────────────────────────────────
+    if detect_create_intent(args.query):
+        print(f"  → 检测到机械/自动化意图，启用 Create 优先搜索...", file=sys.stderr)
+        create_found, create_mods = search_create_addons(
+            query=args.query,
+            version=args.version,
+            loader=args.loader,
+            limit=args.limit,
+            timeout=args.timeout,
+        )
+
+        if create_found and create_mods:
+            create_mods = add_dependency_mods(create_mods, timeout=args.timeout)
+
+            if args.output == "json":
+                output_data = {
+                    "mode": "create_addon",
+                    "query": args.query,
+                    "version": args.version,
+                    "create_base": {
+                        "name": CREATE_MOD_NAME,
+                        "modrinth_url": CREATE_MODRINTH_URL,
+                        "supported_versions": sorted(CREATE_SUPPORTED_VERSIONS),
+                    },
+                    "total": len(create_mods),
+                    "results": [asdict(m) for m in create_mods],
+                    "errors": [],
+                }
+                print(json.dumps(output_data, ensure_ascii=False, indent=2))
+            else:
+                print(format_create_header(args.version, args.loader))
+                print(format_results_text(create_mods, args.query, args.version))
+                print("\n  💡 提示：上述附属 Mod 需要先安装 Create (机械动力) 基础 Mod")
+            return
+        else:
+            print(f"  → Create 附属搜索无结果，回退到普通 Mod 搜索...", file=sys.stderr)
+
+    # ── 普通 Mod 搜索（默认路径 / TACZ & Create fallback）─────────
     print(f"正在搜索 Modrinth... (超时 {args.timeout}s)", file=sys.stderr)
     t0 = time.time()
     modrinth_results = search_modrinth(

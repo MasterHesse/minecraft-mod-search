@@ -13,7 +13,10 @@ description: >
   "minecraft java mod search", "整合包", "modpack推荐", "科技包", "魔法包",
   "生存包", "我的世界1.20.4 forge 整合包", "枪械mod", "枪包", "tacz",
   "枪模组", "手枪", "步枪", "霰弹枪", "狙击枪", "左轮", "火枪", "射击mod",
-  "gun mod", "firearm", "gun pack", "tacz gunpack".
+  "gun mod", "firearm", "gun pack", "tacz gunpack",
+  "机械动力", "create", "create mod", "create addon", "传送带", "齿轮",
+  "自动化", "流水线", "旋转动力", "蒸汽", "铁路", "机械", "工厂",
+  "conveyor", "gear", "automation", "kinetic", "mechanical".
 ---
 
 # Minecraft Java Mod Search Skill
@@ -114,6 +117,54 @@ description: >
 #### TACZ 相关参考
 
 详细的 TACZ 生态信息（枪包安装路径、已知枪包列表、兼容性规则）参考：`references/mod_compat.md` 第 12 节。
+
+### Step 1.6 — 机械/自动化意图检测与 Create 优先搜索
+
+**当检测到用户查询涉及机械、自动化、科技类需求时**，优先使用 Create（机械动力）附属 mod 搜索，而非普通 Mod 搜索。
+
+#### 机械/自动化意图关键词
+
+以下关键词命中时自动触发 Create 优先模式：
+
+| 语言 | 关键词 |
+|------|--------|
+| 中文 | 机械、机械动力、自动化、传送带、齿轮、活塞、动力、轴承、铁路、火车、旋转、应力、流水线、工厂、制造、加工、搅拌、碾压、装配、机械臂、部署器、蒸汽、风车、水车 |
+| 英文 | create mod, create addon, conveyor, belt, gear, pulley, bearing, piston, automation, factory, assembly, mechanical, train, railway, steam, windmill, waterwheel, rotational, kinetic, stress, deployer, mixer, press, millstone |
+
+#### Create 优先搜索流程
+
+```
+用户查询 "传送带" (含机械/自动化关键词)
+    │
+    ├─ detect_create_intent(query) == True ?
+    │       │
+    │       ├─ Yes → search_create_addons(query, version, loader)
+    │       │         │
+    │       │         ├─ 策略1: "create <英文关键词>" + facets=[technology + version]
+    │       │         ├─ 策略2: "create <英文关键词>" + facets=[version]（无分类限制）
+    │       │         │
+    │       │         ├─ 找到结果 → 输出 Create 基础 Mod + 附属 mod 列表
+    │       │         │                包含：功能描述、版本兼容、依赖关系
+    │       │         │
+    │       │         └─ 无结果 → 回退到普通 Mod 搜索（Step 2）
+    │       │
+    │       └─ No → 直接进入普通 Mod 搜索（Step 2）
+```
+
+#### Create 附属 mod 搜索特点
+
+| 特点 | 说明 |
+|------|------|
+| **基础 Mod** | `create`（Forge + Fabric 双平台），需配合 Flywheel（Forge 版） |
+| **附属生态** | Steam 'n' Rails、Crafts & Additions、Slice & Dice、Big Cannons、Copycats+ 等 100+ 附属 |
+| **搜索平台** | Modrinth（category=`technology`），脚本自动将中文机械词翻译为英文关键词 |
+| **版本支持** | 1.14.4 / 1.15.2 / 1.16.5 / 1.18.2 / 1.19.2 / 1.20.1 |
+| **依赖解析** | 自动提取附属 mod 的 required 前置依赖并补入结果列表 |
+| **OptiFine 警告** | Create 与 OptiFine 不兼容，需使用 Oculus（Forge）或 Iris（Fabric） |
+
+#### Create 相关参考
+
+详细的 Create 生态信息（核心机制、已知附属 mod、兼容性规则）参考：`references/mod_compat.md` 第 13 节。
 
 ### Step 2 — 执行多平台搜索
 
@@ -445,6 +496,11 @@ python scripts/search_mods.py --query "自动化" --version "1.19.2" --loader "f
 python scripts/search_mods.py --query "步枪" --version "1.20.1" --loader "forge"
 python scripts/search_mods.py --query "rifle" --version "1.20.1" --limit 5
 python scripts/search_mods.py --query "狙击枪" --version "1.20.1" --output json
+
+# Create 附属 mod 搜索（自动检测机械/自动化意图）
+python scripts/search_mods.py --query "传送带" --version "1.20.1"
+python scripts/search_mods.py --query "automation factory" --version "1.20.1" --limit 8
+python scripts/search_mods.py --query "齿轮轴承" --version "1.20.1" --output json
 ```
 
 ### 9.2 参数说明
@@ -481,3 +537,5 @@ Mod 之间已知冲突与兼容关系参考：
 - **诚实报告不兼容**：若用户选择的 Mod 之间确实存在冲突，必须如实报告，不可忽略或回避
 - **枪械类 Mod → TACZ 优先**：当检测到枪械/武器需求时，优先搜索 TACZ 枪包生态，告知用户需先安装 TACZ 基础 Mod；仅当 TACZ 枪包无结果时才回退到普通 Mod 搜索
 - **TACZ 版本限制**：TACZ 官方版仅支持 Forge 1.18.2–1.20.1；若用户使用 Fabric 或更高 MC 版本，需提示关注社区移植版
+- **机械/自动化类 Mod → Create 优先**：当检测到机械、自动化、科技需求时，优先搜索 Create 附属 mod 生态，告知用户需先安装 Create 基础 Mod；仅当 Create 附属无结果时才回退到普通 Mod 搜索
+- **Create 与 OptiFine 互斥**：Create 依赖 Flywheel 渲染引擎，与 OptiFine 不兼容；Forge 环境需使用 Oculus，Fabric 环境使用 Iris

@@ -329,3 +329,72 @@ TACZ 的核心特性是**可扩展枪包**：无需写代码，以 `.zip` 格式
 | 多枪包共存 | ✅ TACZ 支持同时加载多个枪包，命名空间不冲突即可 |
 | Forge 版 TACZ + Fabric Mod | ❌ 不兼容，加载器限制 |
 | OptiFine 与 TACZ | ⚠️ 部分光影效果与 TACZ 模型动画可能冲突，优先用 Oculus |
+
+---
+
+## 13. Create 机械动力生态（Technology Mod 专项）
+
+### 13.1 什么是 Create
+
+**Create（机械动力）** 是 Minecraft 中最受欢迎的美学科技/自动化 Mod 之一，以旋转力学（齿轮、轴承、传送带）和视觉精美的机械动画著称。
+
+| 项目 | 内容 |
+|------|------|
+| **Modrinth slug** | `create` |
+| **加载器** | Forge + Fabric（官方双平台支持） |
+| **前置依赖** | Flywheel（渲染引擎，Forge 版）；Fabric 版无额外前置 |
+| **下载量** | 16M+（Modrinth，2026 年） |
+| **许可证** | MIT |
+| **支持版本** | 1.14.4 / 1.15.2 / 1.16.5 / 1.18.2 / 1.19.2 / 1.20.1 |
+
+### 13.2 核心机制
+
+Create 的核心是**旋转动力学系统（Rotational Dynamics）**：
+
+- **应力（Stress）**：每个机械组件有应力消耗值，动力源提供应力容量，超载则机械停止
+- **转速（RPM）**：通过齿轮比和大小区分调整转速
+- **动力传递**：齿轮 → 轴 → 皮带 → 传送带等形成动力网络
+
+### 13.3 附属 Mod 在 Modrinth 上的搜索策略
+
+Create 附属 mod 在 Modrinth 上的特征：
+
+| 字段 | 典型值 |
+|------|--------|
+| `categories` | 主要为 `technology`，部分在 `equipment`、`transportation`、`utility`、`decoration` |
+| `loaders` | 依具体 mod 而定（大多数支持 Forge，部分支持 Fabric） |
+| 标题关键词 | 大多包含 "Create" 或 "Create:" 前缀 |
+
+**搜索方式（优先级排序）：**
+
+1. `query="create <关键词>" + facets=[technology, version]` → 最精准，命中率最高
+2. `query="create <关键词>" + facets=[version]` → 无分类限制的泛搜
+
+### 13.4 已知主流 Create 附属 Mod（参考）
+
+| 附属 Mod | 功能 | 下载量 | 加载器 |
+|---------|------|--------|--------|
+| Create: Steam 'n' Rails | 铁路扩展 + 蒸汽系统 | 8.9M | Forge / Fabric |
+| Create Crafts & Additions | 电力↔动力转换 + 新组件 | 7.0M | Forge / Fabric |
+| Create Slice & Dice | Farmer's Delight 自动化集成 | 4.9M | Forge / Fabric |
+| Create Deco | 建筑装饰方块 | 4.7M | Forge / Fabric |
+| Create Big Cannons | 大炮武器系统 | 4.0M | Forge / Fabric |
+| Create: New Age | 电力系统扩展 | 3.7M | Forge |
+| Create: Central Kitchen | 大型厨房自动化 | 3.5M | Forge |
+| Create: Enchantment Industry | 自动附魔系统 | 3.3M | Forge / NeoForge |
+| Create: Copycats+ | 复制方块建筑工具 | 6.2M | Forge / Fabric |
+| Create: Bells & Whistles | 列车信号系统 | 3.0M | Forge / Fabric |
+
+> 上述列表仅供参考，实际附属 mod 持续更新，以 Modrinth 搜索结果为准。
+
+### 13.5 Create Mod 兼容性规则
+
+| 规则 | 说明 |
+|------|------|
+| Create + 其他科技 Mod | ✅ 可与 Mekanism、IE 等共存，但注意不要让两个系统做同一件事 |
+| Create + 其他自动化 Mod | ⚠️ Create 与 Mekanism/AE2 有功能重叠（物流传输），应明确分工 |
+| Create Forge + Create Fabric | ✅ 两个版本功能基本一致，选择对应加载器的版本 |
+| Create + OptiFine | ❌ 不兼容！Create 依赖 Flywheel，与 OptiFine 冲突。Forge 用 Oculus，Fabric 用 Iris |
+| Create + Sodium | ✅ Fabric 版 Create 兼容 Sodium |
+| Create + Immersive Engineering | ✅ 可共存，风格互补（Create 偏美学，IE 偏写实） |
+| Create + Applied Energistics 2 | ✅ 常见组合：AE2 做存储，Create 做加工 |
