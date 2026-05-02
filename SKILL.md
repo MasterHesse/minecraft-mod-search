@@ -29,11 +29,23 @@ description: >
 
 | 平台 | API 类型 | 国内可访问性 | API Key | 优先级 |
 |------|----------|-------------|---------|--------|
-| **Modrinth** | REST API | ✅ 可裸连 | ❌ 不需要 | 🥇 主平台 |
-| **CurseForge** | REST API | ⚠️ 需 Key 或代理 | ✅ 需要 | 🥈 备选 |
-| **Planet Minecraft** | 网页抓取 | ⚠️ 不稳定 | ❌ 不需要 | 🥉 补充 |
+| **快查表** | 本地文件 | ✅ 离线 | ❌ 不需要 | 🥇 最优先 |
+| **Modrinth** | REST API | ✅ 可裸连 | ❌ 不需要 | 🥈 主平台 |
+| **CurseForge** | REST API | ⚠️ 需 Key | ✅ 需要（免费） | 🥉 备选 |
+| **MC百科 mcmod.cn** | 网页抓取 | ✅ 国内直连 | ❌ 不需要 | 4️⃣ 兜底补充 |
 
-> **策略**：优先使用 Modrinth（国内可直接访问，无需认证，超时设置为 8 秒）；CurseForge 和 Planet Minecraft 作为备选或补充数据源，超时设置为 5 秒。
+> **策略**：
+> 1. 快查表优先（离线命中，零延迟）
+> 2. Modrinth 多关键词并行搜索（asyncio+aiohttp，超时 8s）
+> 3. CurseForge 若有 API Key 则并行搜索（超时 5s）；**无 Key 时在回答中提示用户如何填写**
+> 4. Modrinth 结果 < 3 条时，抓取 MC百科搜索页补充（超时 8s）
+
+### CurseForge API Key 配置方法
+
+1. 前往 https://console.curseforge.com/ 申请免费 API Key
+2. 编辑 `references/curseforge_api.md`，在文件末尾添加：`CF_API_KEY=你的key`
+3. 或设置环境变量：`export CF_API_KEY=你的key`
+4. 或运行时通过 `--api-key 你的key` 参数传入
 
 ## 3. 搜索参数
 
@@ -70,6 +82,36 @@ description: >
 - `category`: Mod 类别
 
 若用户未指定版本，询问确认或使用当前主流版本（优先 1.20.4 / 1.21.x）。
+
+### Step 1.2 — 快查表优先命中（新功能）
+
+在所有 API 搜索之前，**先检索 `references/mod_quickref.md`**：
+
+```
+search_quickref(query, version)
+    │
+    ├─ 命中 → 优先展示快查表结果（带 [📚 快查表] 标记）
+    │         后续 API 搜索继续进行作为补充
+    │
+    └─ 未命中 → 继续 Step 1.5
+```
+
+快查表查询时同时匹配：Mod 名称、slug、功能描述、分类关键词、同义词表。
+
+### Step 1.3 — 多关键词提取（新功能）
+
+从用户查询中提取 **3-5 个候选搜索词**，并行发起搜索：
+
+```python
+keywords = _extract_keywords(query)
+# 示例：query="自然生成的中立幸存者 NPC"
+# 提取：["survivor", "npc", "neutral", "spawn"]
+```
+
+提取策略：
+- 中文词通过 `_CN_EN_MAP` 映射为英文
+- 保留查询中的英文词
+- 最多 5 个候选词，去重
 
 ### Step 1.5 — 枪械意图检测与 TACZ 优先搜索
 
@@ -166,32 +208,45 @@ description: >
 
 详细的 Create 生态信息（核心机制、已知附属 mod、兼容性规则）参考：`references/mod_compat.md` 第 13 节。
 
-### Step 2 — 执行多平台搜索
+### Step 2 — 执行多平台并发搜索（新功能：asyncio + aiohttp）
+
+**性能改进**：脚本使用 asyncio + aiohttp 并发请求，多关键词并行发起，同步等待最快结果。
 
 **Modrinth（主平台）**：
-- 调用 `GET https://api.modrinth.com/v2/search`
-- 参数：`query`, `facets=[categories, versions, loaders]`
+- 调用 `GET https://api.modrinth.com/v2/search`（并发 3-5 个关键词）
+- 参数：`query`, `facets=[categories, versions, loaders]`，每请求超时 `DEFAULT_TIMEOUT=8s`
+- 总并发超时：`MULTI_SEARCH_TIMEOUT=12s`
 - 参考文档：`references/modrinth_api.md`
 
 **CurseForge（备选）**：
 - 调用 `GET https://api.curseforge.com/v1/mods/search`
 - 参数：`gameId=432`, `searchFilter`, `classId`（mods=6）
 - 参考文档：`references/curseforge_api.md`
-- 注意：需要 `X-API-Key` 请求头，若无可跳过
+- **⚠️ 注意**：需要 `X-API-Key` 请求头。若未配置，**在回答中明确告知用户**：
+  > "当前未设置 CurseForge API Key，已跳过该平台搜索。前往 https://console.curseforge.com/ 申请免费 Key，然后编辑 `references/curseforge_api.md` 填写。"
 
-**Planet Minecraft（补充）**：
-- 若前两者无结果，使用 `playwright-cli` 工具抓取搜索结果页
-- URL 格式：`https://www.planetminecraft.com/search/?q=<keyword>`
+**MC百科 mcmod.cn（兜底补充）**：
+- **仅在 Modrinth 搜索结果 < 3 个时触发**
+- URL：`https://www.mcmod.cn/s?key=<query>&mold=1&version=<version>`
+- 优先使用原始中文查询词（MC百科是中文数据库，中文命中率更高）
+- 解析结果补充到搜索列表末尾，标注 `[MC百科]`
+- 超时设置 8s，失败静默跳过
 
-### Step 3 — 数据合并与去重
+### Step 3 — 数据合并与去重（优先级：快查表 > Modrinth > CurseForge > MC百科）
 
-- 以 Modrinth 结果为主（如有）
+- 快查表命中结果放在最前面，标注 `[📚 快查表]`
 - 相同 Mod 在多平台出现时，保留下载量更高的记录，并标注来源
 - **去重规则**：优先保留 Modrinth 记录（生态更活跃），其次 CurseForge
 
-### Step 4 — 依赖关系解析
+### Step 4 — 依赖关系解析（默认关闭，`--deps` 参数开启）
 
-对于返回的每个 Mod：
+**重要变更（v2.0）**：为提升搜索速度，依赖查询**默认关闭**。
+
+- 默认模式：不额外发起 `/dependencies` API 请求（比 v1.0 快约 3-5x）
+- 开启方式：脚本传入 `--deps` 参数，或在需要时告知用户该参数
+- 开启后使用 asyncio 并发查询所有 Mod 的依赖，不会串行卡顿
+
+**依赖查询逻辑（开启时）**：
 
 1. 提取 `dependencies` 字段
 2. 识别前置 Mod（如 Sodium → Fabric API）
@@ -252,69 +307,94 @@ description: >
 3. ⬆️ 需要前置依赖的 Mod（依赖也需安装）
 4. ⚠️ 久未更新的 Mod（低优先级）
 
-## 6. 脚本工具
+## 6. 脚本工具（v2.0）
 
 核心搜索脚本位于 `scripts/search_mods.py`。
+
+**v2.0 新特性**：
+- `asyncio + aiohttp` 并发请求（需安装 `pip install aiohttp`；无 aiohttp 时自动降级到同步模式）
+- 多关键词并行搜索（`_extract_keywords` 提取 3-5 个候选词）
+- 快查表优先命中（`references/mod_quickref.md`）
+- 默认不查依赖（用 `--deps` 开启）
+- CurseForge API Key 未配置时输出提示信息
+- Modrinth 结果 < 3 条时自动触发 MC百科补充搜索
+- 所有请求统一设置超时时间（`DEFAULT_TIMEOUT=8s`），避免卡死
+
+### 安装依赖
+
+```bash
+pip install aiohttp  # 强烈推荐，启用并发模式
+```
 
 ### 使用方法
 
 ```bash
+# 普通 Mod 搜索（async 并发，多关键词）
 python scripts/search_mods.py --query "帧率优化" --version "1.20.4" --loader "fabric"
-python scripts/search_mods.py --query "optifine" --version "1.20.1"
-python scripts/search_mods.py --query "自动化" --version "1.19.2" --loader "forge"
+python scripts/search_mods.py --query "自然生成的中立幸存者 NPC" --version "1.20.1"
+
+# 开启依赖查询
+python scripts/search_mods.py --query "存储系统" --version "1.20.1" --deps
+
+# TACZ 枪包搜索（自动检测枪械意图）
+python scripts/search_mods.py --query "步枪" --version "1.20.1" --loader "forge"
+
+# Create 附属 mod 搜索（自动检测机械/自动化意图）
+python scripts/search_mods.py --query "传送带" --version "1.20.1"
+
+# 整合包分析模式
+python scripts/search_mods.py --modpack --query "科技包" --version "1.20.1" --loader "forge" --directions 能源 自动化 物流
 ```
 
 ### 参数说明
 
-- `--query`: 搜索关键词（支持多词，用空格分隔）
-- `--version`: Minecraft 版本（如 1.20.4）
-- `--loader`: 加载器类型（forge / fabric / quilt）
-- `--platform`: 搜索平台（modrinth / curseforge / all），默认 all
-- `--limit`: 返回结果数量，默认 15
-- `--timeout`: 请求超时秒数，默认 8
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--query` | （必填） | 搜索关键词 |
+| `--version` | 无 | Minecraft 版本，如 1.20.4 |
+| `--loader` | 无 | 加载器类型（forge/fabric/quilt） |
+| `--platform` | all | 搜索平台（modrinth/curseforge/all） |
+| `--limit` | 15 | 返回结果数量 |
+| `--timeout` | 8 | 单请求超时（秒） |
+| `--api-key` | 无 | CurseForge API Key |
+| `--output` | text | 输出格式（text/json） |
+| `--deps` | False | **开启依赖查询**（默认关闭） |
+| `--modpack` | False | 启用整合包分析模式 |
+| `--directions` | 无 | 整合包各功能方向关键词（配合 --modpack） |
 
-### 输出格式
+## 7. Mod 快查表（新模块）
 
-JSON，包含：
+快查表文件位于 `references/mod_quickref.md`，包含：
 
-```json
-{
-  "platform": "modrinth",
-  "query": "...",
-  "version": "...",
-  "results": [
-    {
-      "name": "Sodium",
-      "slug": "sodium",
-      "author": "...",
-      "description": "...",
-      "downloads": 123456,
-      "favorites": 7890,
-      "categories": ["optimization", "fabric"],
-      "game_versions": ["1.20.4", "1.20.1"],
-      "loaders": ["fabric", "quilt"],
-      "latest_version": "0.5.8",
-      "published": "2024-01-15",
-      "updated": "2024-11-20",
-      "icon_url": "...",
-      "modrinth_url": "https://modrinth.com/mod/sodium",
-      "curseforge_url": "https://www.curseforge.com/minecraft/mc-mods/sodium",
-      "dependencies": [{"name": "fabric-api", "slug": "fabric-api", "required": true}],
-      "score": 92.5,
-      "warnings": []
-    }
-  ],
-  "total": 42,
-  "errors": []
-}
+- **热门/经典 Mod 数据**（Modrinth 热门榜 2025-05 整理）
+- **按分类组织**：前置库、性能优化、存储、机械动力、魔法、食物农业、NPC/村民、枪械、建筑装饰等
+- **关键词同义词对照表**（便于 AI 意图扩展匹配）
+- **数据格式**：`- 英文名 | slug: xxx | 功能描述 | 支持加载器和版本`
+
+### 快查表匹配规则
+
+| 匹配优先级 | 条件 | 加分 |
+|----------|------|------|
+| 1（最高） | Mod 名称在查询中或查询在名称中 | +100 |
+| 2 | slug 在查询中 | +80 |
+| 3 | 提取关键词命中快查表 keywords 字段 | +30/词 |
+| 4 | 分类名称在查询中 | +20 |
+| 5（扣分） | 版本不匹配 | -20 |
+
+### 更新快查表
+
+当发现有价值的新 Mod 时，在对应 `## 分类` 下追加一行：
+
+```markdown
+- Mod英文名 [| 中文名] | slug: slug名 | 功能描述（20字以内）| fabric/forge 版本范围
 ```
 
-## 7. 版本兼容性参考
+## 8. 版本兼容性参考
 
 Minecraft Java Edition 主要版本及兼容性说明参考：
 `references/mc_versions.md`
 
-## 8. 整合包分析模式（Modpack Analyzer）
+## 9. 整合包分析模式（Modpack Analyzer）
 
 当用户提供**整合包设想**（含 MC 版本 + 多功能方向）时，启用本模式。
 
@@ -516,6 +596,19 @@ python scripts/search_mods.py --query "齿轮轴承" --version "1.20.1" --output
 
 支持 `--output text`（人类可读）和 `--output json`（JSON 格式）。
 
+**text 格式示例（含快查表命中）**：
+
+```
+【快查表命中 — 高可信度推荐】
+★ 1. Human Companions  [📚 快查表]
+    添加中立幸存者 NPC，可自然生成于世界中
+    Modrinth: https://modrinth.com/mod/human-companions
+
+【API 搜索结果】
+▶ 1. Easy NPC  [🔥 TOP推荐]
+    ...
+```
+
 ## 10. 版本兼容性参考
 
 Minecraft Java Edition 主要版本及兼容性说明参考：
@@ -530,9 +623,10 @@ Mod 之间已知冲突与兼容关系参考：
 
 - **避免虚假信息**：仅返回实际 API / 网页查询到的结果，不编造 Mod 数据
 - **版本敏感性**：明确告知用户当前 Mod 兼容的版本范围，避免误导
-- **依赖提示**：对于含前置依赖的 Mod，必须在结果中醒目标注，并提供依赖 Mod 的下载链接
+- **依赖提示（按需）**：默认不查询依赖（节省时间）；若用户明确要求查看依赖，运行时加 `--deps` 参数
 - **失效检测**：若 Mod 超过 12 个月未更新，标注 `[⚠️ 久未更新]`
 - **中文友好**：返回给用户的内容使用中文描述
+- **CurseForge 无 Key 时提示**：若 CurseForge API Key 未配置，**必须在回答中明确告知**用户配置方法（不可静默跳过）
 - **整合包模式**：始终先确认 MC 版本和加载器，再进行多方向搜索和兼容性检查
 - **诚实报告不兼容**：若用户选择的 Mod 之间确实存在冲突，必须如实报告，不可忽略或回避
 - **枪械类 Mod → TACZ 优先**：当检测到枪械/武器需求时，优先搜索 TACZ 枪包生态，告知用户需先安装 TACZ 基础 Mod；仅当 TACZ 枪包无结果时才回退到普通 Mod 搜索
